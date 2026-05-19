@@ -72,7 +72,7 @@ class MultiHeadAttention(nn.Module):
         key = transform(key, self.k)
         value = transform(value, self.v)
 
-        x, _ = attention(query, key, value, mask=mask, dropout=self.dropout)
+        x= attention(query, key, value, mask=mask, dropout=self.dropout)
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
 
         return self.linear_out(x)
