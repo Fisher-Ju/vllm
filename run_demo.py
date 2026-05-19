@@ -32,6 +32,5 @@ if __name__ == '__main__':
     # 前向传播
     output = model(src, tgt, src_mask, tgt_mask)
 
-    print("✅ 拆分文件运行成功！")
-    print(f"输入src shape: {src.shape}")
-    print(f"模型输出shape: {output.shape}")
+    print(f"输入src shape: {src.shape}, src={src}")
+    print(f"模型输出shape: {output.shape}, output={output}")
