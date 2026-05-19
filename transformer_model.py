@@ -50,16 +50,18 @@ def attention(query, key, value, mask=None, dropout=None):
     return torch.matmul(attn, value)
 
 
-class MultiHeadAttention(nn.Module):  ## self.d_model = self.d_k * self.nums_heads
+class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, num_heads, dropout=0.1):
         super().__init__()
         assert d_model % num_heads == 0
         self.d_model = d_model
         self.num_heads = num_heads
+        self.d_k = d_model // num_heads
 
-        self.q = nn.Linear(d_model, d_model // num_heads, bias=False)
-        self.k = nn.Linear(d_model, d_model // num_heads, bias=False)
-        self.v = nn.Linear(d_model, d_model // num_heads, bias=False)
+        self.q = nn.Linear(d_model, d_model, bias=False)
+        self.k = nn.Linear(d_model, d_model, bias=False)
+        self.v = nn.Linear(d_model, d_model, bias=False)
+        self.linear_out = nn.Linear(d_model, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, query, key, value, mask=None):
@@ -97,16 +99,14 @@ class FeedForward(nn.Module):
 
 
 class AddNorm(nn.Module):
-    def __init__(self, d_model, d_ff, dropout=0.1):
+    def __init__(self, d_model, dropout=0.1):
         super().__init__()
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
-        self.net = nn.Sequential(
-            nn.Linear(d_model, d_ff),
-        )
 
     def forward(self, x, sub_layer):
         return self.dropout(sub_layer(self.norm(x))) + x
+
 
 
 class EncoderLayer(nn.Module):
@@ -170,21 +170,20 @@ class Transformer(nn.Module):
         ])
         self.out = nn.Linear(dmodel, tgt_vocab)
 
-        def encode(self, src, src_mask):
-            x = self.src_embed(src)
-            for layer in self.encoder:
-                x = layer(x, src_mask)
-            return x
+    def encode(self, src, src_mask):
+        x = self.src_embed(src)
+        for layer in self.encoder:
+            x = layer(x, src_mask)
+        return x
 
-        def decode(self, tgt, memory, src_mask, tgt_mask):
-            x = self.tgt_embed(tgt)
-            for layer in self.decoder:
-                x = layer(x, memory, src_mask, tgt_mask)
-            return x
+    def decode(self, tgt, memory, src_mask, tgt_mask):
+        x = self.tgt_embed(tgt)
+        for layer in self.decoder:
+            x = layer(x, memory, src_mask, tgt_mask)
+        return x
 
-        def forward(self, src, tgt, src_mask, tgt_mask=None):
-            src = self.src_embed(src)
-            memory = self.encode(src, src_mask)
-            out = self.decode(tgt, memory, src_mask, tgt_mask)
-
-            return self.out(out)
+    def forward(self, src, tgt, src_mask, tgt_mask=None):
+        src = self.src_embed(src)
+        memory = self.encode(src, src_mask)
+        out = self.decode(tgt, memory, src_mask, tgt_mask)
+        return self.out(out)
