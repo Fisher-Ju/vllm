@@ -3,7 +3,9 @@ import torch
 # 从同目录下的模型文件导入Transformer类
 from transformer_model import Transformer
 
-if __name__ == '__main__':
+
+def main():
+    global batch_size, model, output
     # 超参数
     src_vocab_size = 4
     tgt_vocab_size = 4
@@ -34,3 +36,7 @@ if __name__ == '__main__':
 
     print(f"输入src shape: {src.shape}, src={src}")
     print(f"模型输出shape: {output.shape}, output={output}")
+
+
+if __name__ == '__main__':
+    main()
