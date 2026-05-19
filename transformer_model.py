@@ -119,7 +119,7 @@ class EncoderLayer(nn.Module):
 
     def forward(self, out1, mask):
         out1 = self.subLayers[0](out1, lambda x: self.self_attn(x, x, x, mask))
-        out2 = self.subLayers[1](out1, self.feed_forward(out1))
+        out2 = self.subLayers[1](out1, lambda x:  self.feed_forward(x))
         return out2
 
 
@@ -137,8 +137,8 @@ class DecoderLayer(nn.Module):
 
     def forward(self, x, memory, src_mask, tgt_mask):
         out1 = self.subLayers[0](x, lambda y1: self.self_attn(x, x, x, tgt_mask))
-        out2 = self.subLayers[1](out1, lambda y2: self.cross_attn(out1, memory, memory, src_mask))
-        out3 = self.subLayers[2](out2, self.feed_forward(out2))
+        out2 = self.subLayers[1](out1, lambda y2: self.cross_attn(y2, memory, memory, src_mask))
+        out3 = self.subLayers[2](out2, lambda y3: self.feed_forward(y3))
 
         return out3
 
