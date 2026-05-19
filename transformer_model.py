@@ -163,7 +163,7 @@ class Transformer(nn.Module):
             EncoderLayer(dmodel, attn(), ff(), dropout) for _ in range(N)
         ])
         self.decoder = nn.ModuleList([
-            DecoderLayer(dmodel, attn(), ff(), dropout) for _ in range(N)
+            DecoderLayer(dmodel, attn(), attn(), ff(), dropout) for _ in range(N)
         ])
         self.out = nn.Linear(dmodel, tgt_vocab)
 
