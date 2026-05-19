@@ -160,10 +160,10 @@ class Transformer(nn.Module):
         ff = lambda: FeedForward(d_model=dmodel, d_ff=d_ff, dropout=dropout)
 
         self.encoder = nn.ModuleList([
-            EncoderLayer(dmodel, attn, ff, dropout) for _ in range(N)
+            EncoderLayer(dmodel, attn(), ff(), dropout) for _ in range(N)
         ])
         self.decoder = nn.ModuleList([
-            DecoderLayer(dmodel, attn, ff, dropout) for _ in range(N)
+            DecoderLayer(dmodel, attn(), ff(), dropout) for _ in range(N)
         ])
         self.out = nn.Linear(dmodel, tgt_vocab)
 
