@@ -180,7 +180,6 @@ class Transformer(nn.Module):
         return x
 
     def forward(self, src, tgt, src_mask, tgt_mask=None):
-        src = self.src_embed(src)
         memory = self.encode(src, src_mask)
         out = self.decode(tgt, memory, src_mask, tgt_mask)
         return self.out(out)
