@@ -2760,7 +2760,7 @@ if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
 
 **实现**:
 ```python
-# vllm/v1/core/kv_cache_manager.py (Line 176)
+# vllm/v1/core/sched/scheduler.py (Line 616)
 computed_blocks = self.kv_cache_manager.get_computed_blocks(request)
 ```
 
