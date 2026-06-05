@@ -2281,25 +2281,160 @@ class Request:
     _prompt_embeds_per_block_hashes: dict[tuple[int, int], bytes]  # 块级别的提示嵌入哈希
 ```
 
+**Request 在推理生命周期中的作用**：
+
+1. **请求初始化阶段**：
+   - 由 InputProcessor 创建并初始化
+   - 设置请求的基本属性（ID、参数、时间戳等）
+   - 初始化请求状态为 WAITING
+
+2. **调度阶段**：
+   - 作为 Scheduler.add_request() 的输入参数
+   - 调度器根据 priority、arrival_time 等属性进行排队和调度
+   - 存储请求的当前状态（WAITING、RUNNING、PREEMPTED）
+
+3. **执行阶段**：
+   - 作为 SchedulerOutput 的组成部分，被传递给 GPUModelRunner
+   - 保存执行过程中的状态变化（如 num_computed_tokens 增加）
+   - 维护输出 token 列表，支持增量输出
+
+4. **完成阶段**：
+   - 当请求完成时，更新状态为 FINISHED_* 状态
+   - 记录完成原因（停止、长度限制、错误等）
+   - 清理资源并通知相关组件
+
+**Request 与其他组件的关系**：
+
+1. **InputProcessor**：
+   - 负责创建 Request 对象
+   - 验证参数和配置
+   - 通过 EngineCoreClient.add_request() 传递给 EngineCore
+
+2. **Scheduler**：
+   - 作为核心调度单元，管理所有 Request 对象
+   - 根据 Request 的状态和属性决定调度策略
+   - 更新 Request 的状态（WAITING → RUNNING → FINISHED）
+   - 维护请求队列（waiting、running、skipped_waiting）
+
+3. **EngineCore**：
+   - 接收来自 Scheduler 的请求调度信息
+   - 管理请求的生命周期
+   - 通过 SchedulerOutput 将请求信息传递给执行器
+
+4. **GPUModelRunner**：
+   - 接收 Request 信息进行模型执行
+   - 根据 Request 的 prompt_token_ids 和其他参数准备输入
+   - 更新 Request 的执行状态（如 num_computed_tokens）
+
+5. **KVCacheManager**：
+   - 使用 Request 的 block_hashes 进行前缀缓存查找
+   - 根据 Request 的 cache_salt 和其他信息进行缓存管理
+   - 为 Request 分配和释放 KV Cache blocks
+
+6. **OutputProcessor**：
+   - 从 Request 中获取输出 token 列表进行解码
+   - 根据 Request 的状态和配置生成响应
+   - 处理 Request 的流式输出需求
+
+7. **SchedulerOutput**：
+   - 通过 NewRequestData.from_request() 方法将 Request 转换为调度所需的数据格式
+   - 作为 Request 与执行器之间的重要桥梁
+
+**Request 状态流转**：
+```
+WAITING → RUNNING → (PREEMPTED) → FINISHED_*
+    ↑            ↓
+    └───(抢占)───┘
+```
+
 ### 5.2 Scheduler Output
 
 ```python
 # vllm/v1/core/sched/output.py
 class SchedulerOutput:
-    scheduled_new_reqs: list[NewRequestData]      # 新请求
-    scheduled_cached_reqs: CachedRequestData      # 已缓存请求 (running + resumed)
-    num_scheduled_tokens: dict[str, int]          # 每个请求调度 token 数
-    total_num_scheduled_tokens: int               # 总 token 数
-    scheduled_spec_decode_tokens: dict[str, list[int]]  # Spec decode tokens
-    scheduled_encoder_inputs: dict[str, list[int]]      # Encoder inputs
-    num_common_prefix_blocks: list[int]           # 每个 KV group 的公共前缀 blocks
-    preempted_req_ids: set[str]                   # 被抢占请求 IDs
-    finished_req_ids: set[str]                    # 已完成请求 IDs
-    free_encoder_mm_hashes: set[str]              # 需释放的 encoder mm hashes
-    new_block_ids_to_zero: list[int] | None       # 需清零的新 block IDs
-    kv_connector_metadata: KVConnectorMetadata | None   # KV connector 元数据
-    ec_connector_metadata: ECConnectorMetadata | None   # EC connector 元数据
+    # 新请求数据 - 首次调度的新请求
+    scheduled_new_reqs: list[NewRequestData]      # 新请求数据列表
+    
+    # 已缓存请求数据 - 已经在 worker 上缓存的请求
+    scheduled_cached_reqs: CachedRequestData      # 已缓存请求数据
+    
+    # 调度统计信息
+    num_scheduled_tokens: dict[str, int]          # 每个请求调度的 token 数量
+    total_num_scheduled_tokens: int               # 总调度 token 数量
+    
+    # Speculative decoding 相关
+    scheduled_spec_decode_tokens: dict[str, list[int]]  # 调度的 spec decode tokens
+    
+    # 多模态处理相关
+    scheduled_encoder_inputs: dict[str, list[int]]      # 需要处理的编码器输入索引
+    
+    # KV Cache 相关
+    num_common_prefix_blocks: list[int]           # 每个 KV 缓存组的公共前缀块数量
+    
+    # 状态管理
+    finished_req_ids: set[str]                    # 本步骤中完成的请求 ID 集合
+    free_encoder_mm_hashes: list[str]             # 需要释放的编码器 mm hash 列表
+    
+    # 调度控制
+    preempted_req_ids: set[str] | None            # 本步骤中被抢占的请求 ID 集合
+    
+    # 结构化输出相关
+    has_structured_output_requests: bool          # 是否包含结构化输出请求
+    pending_structured_output_tokens: bool        # 是否有待处理的结构化输出 token
+    
+    # 性能优化相关
+    num_invalid_spec_tokens: dict[str, int] | None # 无效 spec decode token 数量
+    
+    # 连接器元数据
+    kv_connector_metadata: KVConnectorMetadata | None   # KV 缓存连接器元数据
+    ec_connector_metadata: ECConnectorMetadata | None   # EC 缓存连接器元数据
+    
+    # 内存管理
+    new_block_ids_to_zero: list[int] | None       # 本步骤中需要清零的新块 ID 列表
 ```
+
+**SchedulerOutput 在推理生命周期中的作用**：
+
+1. **调度决策输出**：Scheduler.schedule() 方法的最终输出，包含了所有调度决策结果
+2. **执行器输入**：作为 GPUModelRunner.execute_model() 的输入参数，告知执行器需要处理哪些请求
+3. **状态同步**：在调度和执行之间传递请求状态和统计信息
+4. **资源管理**：通过 finished_req_ids 和 free_encoder_mm_hashes 管理资源回收
+5. **性能监控**：提供详细的调度统计信息用于性能分析
+
+**与关键组件的交互关系**：
+
+1. **Scheduler**：
+   - 作为调度器的核心输出，包含调度决策结果
+   - 传递请求的状态变化和调度信息
+
+2. **EngineCore**：
+   - 从 Scheduler 获取 SchedulerOutput
+   - 将其传递给 GPUModelRunner.execute_model()
+
+3. **GPUModelRunner**：
+   - 接收 SchedulerOutput 作为输入
+   - 根据其中的数据准备模型输入批次
+   - 调度请求的状态更新依赖于此对象
+
+4. **KVCacheManager**：
+   - 通过 new_block_ids_to_zero 管理新分配块的初始化
+   - 通过 num_common_prefix_blocks 优化缓存访问
+
+5. **KVConnector/ECConnector**：
+   - 通过 kv_connector_metadata 和 ec_connector_metadata 传递连接器相关信息
+   - 协调分布式缓存的访问和同步
+
+6. **OutputProcessor**：
+   - 从 EngineCoreOutput 中提取信息进行响应生成
+   - 需要 SchedulerOutput 中的请求状态信息
+
+**关键方法说明**：
+
+1. `make_empty()` - 创建空的 SchedulerOutput 实例，用于初始化或错误处理
+2. `NewRequestData.from_request()` - 从 Request 对象创建新请求数据
+3. `CachedRequestData.make_empty()` - 创建空的缓存请求数据
+4. `_req_id_to_num_output_tokens` - 缓存请求 ID 到输出 token 数量的映射，提高查找效率
+5. `is_context_phase()` - 判断请求是否处于上下文阶段（无输出 token）
 
 ### 5.3 Model Runner Output
 
