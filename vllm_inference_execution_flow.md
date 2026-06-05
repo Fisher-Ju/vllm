@@ -2223,45 +2223,62 @@ def check_stop_strings(
 ```python
 # vllm/v1/request.py (Line 59-173)
 class Request:
-    request_id: str
-    client_index: int
-    priority: int
-    sampling_params: SamplingParams | None
-    pooling_params: PoolingParams | None
-    lora_request: LoRARequest | None
-    arrival_time: float
+    # 核心标识
+    request_id: str                        # 请求唯一标识符
+    client_index: int                      # 客户端索引，用于输出路由
+    priority: int                          # 请求优先级，影响调度顺序
     
-    # Prompt 相关
-    prompt_token_ids: list[int] | None
-    prompt_embeds: torch.Tensor | None
-    num_prompt_tokens: int
+    # 参数配置
+    sampling_params: SamplingParams | None # 采样参数（生成任务）
+    pooling_params: PoolingParams | None   # 池化参数（池化任务）
+    lora_request: LoRARequest | None       # LoRA 微调配置
+    structured_output_request: StructuredOutputRequest | None  # 结构化输出请求
     
-    # 输出相关
-    output_token_ids: ConstantList[int]  # 只读视图
-    all_token_ids: ConstantList[int]
-    num_output_tokens: int
-    num_computed_tokens: int
+    # 时间戳和状态
+    arrival_time: float                    # 请求到达时间
+    status: RequestStatus                  # 当前请求状态 (WAITING, RUNNING, FINISHED等)
+    events: list[EngineCoreEvent]          # 请求生命周期事件记录
     
-    # Speculative decoding
-    spec_token_ids: list[int]
-    num_output_placeholders: int
+    # Prompt 输入相关
+    prompt_token_ids: list[int] | None     # 提示 token ID 列表
+    prompt_embeds: torch.Tensor | None     # 提示嵌入向量（替代 token IDs）
+    num_prompt_tokens: int                 # 提示 token 数量
     
-    # 状态
-    status: RequestStatus  # WAITING, RUNNING, FINISHED, etc.
-    events: list[EngineCoreEvent]
-    stop_reason: int | str | None
-    finish_reason: FinishReason | None
+    # 输出追踪
+    output_token_ids: ConstantList[int]    # 只读输出 token ID 列表（只读视图）
+    all_token_ids: ConstantList[int]       # 所有 token ID 列表（包含 prompt 和输出）
+    num_output_tokens: int                 # 输出 token 数量
+    num_computed_tokens: int               # 已计算 token 数量
     
-    # Multimodal
-    mm_features: list[MultiModalFeatureSpec]
+    # 缓存和优化
+    cache_salt: str | None                 # 缓存盐值，用于构建缓存键
+    block_hashes: list[BlockHash]          # 块哈希值，用于前缀缓存
+    skip_reading_prefix_cache: bool        # 是否跳过前缀缓存读取
     
-    # KV Cache
-    cache_salt: str | None
-    block_hashes: list[BlockHash]
+    # Speculative decoding 相关
+    spec_token_ids: list[int]              # 待验证的草案 token ID
+    num_output_placeholders: int           # 输出占位符数量（spec decode）
+    discard_latest_async_tokens: bool      # 是否丢弃最新的异步 token
     
-    # Streaming
-    resumable: bool
-    streaming_queue: deque[StreamingUpdate | None] | None
+    # 多模态支持
+    mm_features: list[MultiModalFeatureSpec] # 多模态特征列表
+    
+    # 流式处理
+    resumable: bool                        # 是否支持流式续传
+    streaming_queue: deque[StreamingUpdate | None] | None  # 流式更新队列
+    
+    # 调度和执行追踪
+    num_nans_in_logits: int                # logits 中 NaN 数量（检测输出错误）
+    num_preemptions: int                   # 被抢占次数
+    prefill_stats: PrefillStats | None     # 预填充统计信息
+    
+    # 停止控制
+    stop_reason: int | str | None          # 停止原因
+    finish_reason: FinishReason | None     # 完成原因
+    
+    # KV Cache 管理
+    kv_transfer_params: dict[str, Any] | None  # KV 缓存传输参数
+    _prompt_embeds_per_block_hashes: dict[tuple[int, int], bytes]  # 块级别的提示嵌入哈希
 ```
 
 ### 5.2 Scheduler Output
