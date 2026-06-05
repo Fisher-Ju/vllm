@@ -2561,20 +2561,181 @@ OutputProcessor.process_outputs()
 ```python
 # vllm/v1/worker/gpu_input_batch.py
 class InputBatch:
-    req_ids: list[str]              # 请求 IDs
-    input_ids: torch.Tensor         # Token IDs (GPU)
-    positions: torch.Tensor         # Position IDs (GPU)
-    query_start_loc: torch.Tensor   # Query 起始位置 (cumsum, GPU)
-    seq_lens: torch.Tensor          # 序列长度 (GPU)
-    num_tokens: int                 # 总 token 数
-    num_reqs: int                   # 请求数量
-    num_logits: int                 # 需要 logits 的 token 数
-    logits_indices: torch.Tensor    # logits 索引
-    cu_num_logits_np: np.ndarray    # logits cumsum (用于 logprobs)
-    expanded_idx_mapping: torch.Tensor  # 扩展索引映射
-    idx_mapping_np: np.ndarray      # 索引映射 (numpy)
-    expanded_local_pos: np.ndarray  # 扩展本地位置
+    """
+    GPU输入批次数据结构，用于模型执行的批量处理。
+    
+    该类管理所有请求的输入数据，包括token ID、采样参数、块表信息等，
+    是GPU模型执行前必须准备的数据集合。
+    """
+
+    # 请求ID列表，用于批次中每个请求的唯一标识
+    _req_ids: list[str | None]
+
+    # 请求ID到索引的映射，用于快速查找请求在批次中的位置
+    req_id_to_index: dict[str, int]
+
+    # CPU上的token ID数组，存储所有请求的token序列
+    # 形状: (max_num_reqs, max_model_len)
+    token_ids_cpu_tensor: torch.Tensor
+
+    # CPU上的token标识数组，标记哪些位置是有效的token
+    # 形状: (max_num_reqs, max_model_len)
+    is_token_ids_tensor: torch.Tensor
+
+    # 存储每个请求的提示嵌入向量，避免因max_model_len过大导致的内存溢出
+    # 映射: req_index -> tensor of shape (num_prompt_tokens, hidden_size)
+    req_prompt_embeds: dict[int, torch.Tensor]
+
+    # 每个请求不包含spec decode token的数量
+    # 形状: (max_num_reqs,)
+    num_tokens_no_spec_cpu_tensor: torch.Tensor
+
+    # 每个请求的提示token数量
+    # 形状: (max_num_reqs,)
+    num_prompt_tokens_cpu_tensor: torch.Tensor
+
+    # 每个请求已计算的token数量
+    # 形状: (max_num_reqs,)
+    num_computed_tokens_cpu_tensor: torch.Tensor
+
+    # 块表，管理每个请求的KV缓存块分配
+    block_table: MultiGroupBlockTable
+
+    # 采样相关参数 - 温度系数
+    # 形状: (max_num_reqs,)
+    temperature: torch.Tensor
+
+    # 采样相关参数 - Top-P值
+    # 形状: (max_num_reqs,)
+    top_p: torch.Tensor
+
+    # 采样相关参数 - Top-K值
+    # 形状: (max_num_reqs,)
+    top_k: torch.Tensor
+
+    # 频率惩罚系数
+    # 形状: (max_num_reqs,)
+    frequency_penalties: torch.Tensor
+
+    # 存在惩罚系数
+    # 形状: (max_num_reqs,)
+    presence_penalties: torch.Tensor
+
+    # 重复惩罚系数
+    # 形状: (max_num_reqs,)
+    repetition_penalties: torch.Tensor
+
+    # 用于投机解码的接受token数量
+    # 形状: (max_num_reqs,)
+    num_accepted_tokens_cpu_tensor: torch.Tensor
+
+    # LoRA相关 - 请求到LoRA ID的映射
+    request_lora_mapping: np.ndarray
+
+    # LoRA相关 - LoRA ID到请求ID的映射
+    lora_id_to_request_ids: dict[int, set[str]]
+
+    # LoRA相关 - LoRA ID到LoRA请求的映射
+    lora_id_to_lora_request: dict[int, LoRARequest]
+
+    # 生成器映射，用于随机采样
+    generators: dict[int, torch.Generator]
+
+    # 日志概率相关 - 每个请求需要计算的日志概率数量
+    num_logprobs: dict[str, int]
+
+    # 日志概率相关 - 指定需要计算日志概率的特定token ID列表
+    logprob_token_ids: dict[str, list[int]]
+
+    # 进行中的提示日志概率tensor块，用于跨预填充步骤积累
+    in_progress_prompt_logprobs_cpu: dict[str, LogprobsTensors]
+
+    # 批次更新构建器，用于跟踪批次状态变化
+    batch_update_builder: BatchUpdateBuilder
+
+    # 允许的token ID集合
+    has_allowed_token_ids: set[str]
+
+    # 允许的token ID掩码，用于过滤不允许的token
+    allowed_token_ids_mask: torch.Tensor | None
+
+    # 坏词token ID列表
+    bad_words_token_ids: dict[int, list[list[int]]]
+
+    # 日志处理是否需要token ID
+    logits_processing_needs_token_ids: np.ndarray
+
+    # 请求输出token ID列表
+    req_output_token_ids: list[list[int] | None]
+
+    # 日志处理器实例
+    logitsprocs: LogitsProcessors
+
+    # 投机解码相关 - 存储每个请求的投机token ID
+    spec_token_ids: list[list[int]]
+
+    # 采样元数据
+    sampling_metadata: SamplingMetadata
+
+    # 池化模型相关参数
+    pooling_params: dict[str, PoolingParams]
+
+    # 池化模型相关状态
+    pooling_states: dict[str, PoolingStates]
+
+    # 上一步采样的token ID引用
+    prev_sampled_token_ids: torch.Tensor | None
+
+    # 上一步请求ID到索引的映射
+    prev_req_id_to_index: dict[str, int] | None
+
+    # 采样token ID的CPU副本
+    sampled_token_ids_cpu: torch.Tensor | None
+
+    # 异步复制就绪事件
+    async_copy_ready_event: torch.Event | None
 ```
+
+**InputBatch 在推理生命周期中的作用**：
+
+1. **输入准备阶段**：在 GPUModelRunner.prepare_inputs() 中创建和初始化
+2. **批量处理载体**：作为模型执行的输入载体，包含所有请求的批量数据
+3. **状态管理**：维护请求在批次中的状态和索引关系
+4. **资源分配**：管理GPU内存分配和缓存块映射
+5. **采样配置**：存储所有请求的采样参数配置
+6. **LoRA支持**：管理LoRA微调模型的激活和切换
+
+**与关键组件的交互关系**：
+
+1. **GPUModelRunner**：
+   - 由 prepare_inputs() 方法创建和填充
+   - 作为模型执行的输入参数传递
+   - 通过 block_table 管理KV缓存块
+
+2. **Scheduler**：
+   - 在调度阶段确定批次中的请求
+   - 通过 block_table 管理块分配
+
+3. **KVCacheManager**：
+   - 通过 block_table 进行块分配和管理
+   - 协助管理KV缓存状态
+
+4. **Sampler**：
+   - 提供采样参数（temperature, top_p, top_k等）
+   - 通过 sampling_metadata 传递采样相关配置
+
+5. **LogitsProcessor**：
+   - 通过 logitsprocs 处理logits
+   - 通过 sampling_metadata 传递处理配置
+
+**关键方法说明**：
+
+1. **add_request()** - 添加新请求到批次中
+2. **remove_request()** - 从批次中移除请求
+3. **swap_states()** - 交换请求状态位置（用于重排序）
+4. **condense()** - 压缩批次，移除空位置
+5. **refresh_metadata()** - 刷新采样元数据
+6. **make_lora_inputs()** - 生成LoRA激活所需的输入数据
 
 ---
 
