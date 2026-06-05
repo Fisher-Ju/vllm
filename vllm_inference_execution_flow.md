@@ -2441,30 +2441,119 @@ class SchedulerOutput:
 ```python
 # vllm/v1/outputs.py (Line 166-203)
 class ModelRunnerOutput:
-    req_ids: list[str]                    # 请求 IDs 列表
-    req_id_to_index: dict[str, int]       # request_id -> index 映射
+    """
+    模型运行器输出，包含生成的token和相关的信息。
     
-    # [num_reqs x num_generated_tokens] - 每个 request 的采样 token
-    sampled_token_ids: list[list[int]]    # 列表的列表，非 dict
-    
-    # Logprobs
-    logprobs: LogprobsLists | None
-    prompt_logprobs_dict: dict[str, LogprobsTensors | None]
-    
-    # Pooler output (for embedding models)
-    pooler_output: list[torch.Tensor | None] | None
-    
-    # KV Connector output
-    kv_connector_output: KVConnectorOutput | None
-    
-    # EC Connector output
-    ec_connector_output: ECConnectorOutput | None
-    
-    # NaN tracking
-    num_nans_in_logits: dict[str, int] | None
-    
-    # CUDA Graph stats
-    cudagraph_stats: CUDAGraphStat | None
+    该数据结构作为GPU模型执行和vLLM系统其余部分之间的桥梁，
+    承载了调度、响应生成和资源管理所需的所有关键信息。
+    """
+
+    # [num_reqs]
+    # 处理批次中的请求ID列表。
+    # 用于索引和跟踪单个请求的结果。
+    req_ids: list[str]
+
+    # req_id -> index
+    # 请求ID到结果数组中索引的映射。
+    # 支持批量操作中的快速查找请求特定数据。
+    req_id_to_index: dict[str, int]
+
+    # num_reqs x num_generated_tokens
+    # num_generated_tokens 是当前步骤生成的token数量。
+    # 由于投机/跳跃解码，每个请求可能不同。
+    # 包含模型生成的实际采样token ID。
+    sampled_token_ids: list[list[int]] = field(default_factory=list)
+
+    # [num_reqs, max_num_logprobs + 1]
+    # [num_reqs, max_num_logprobs + 1]
+    # [num_reqs]
+    # 生成token的日志概率信息。
+    # 包含用于调试和分析的token级概率分布。
+    logprobs: LogprobsLists | None = None
+
+    # req_id -> (token_ids, logprobs, ranks)
+    # [prompt_len, num_prompt_logprobs]
+    # [prompt_len, num_prompt_logprobs]
+    # [prompt_len]
+    # 每个请求的提示日志概率。
+    # 存储初始提示token的日志概率，有助于理解模型对其初始理解的信心。
+    prompt_logprobs_dict: dict[str, LogprobsTensors | None] = field(
+        default_factory=dict
+    )
+
+    # [num_reqs, hidden_size]
+    # 每个请求的池化输出。
+    # 对于池化模型，包含表示整个输入序列的最终嵌入向量。对于生成模型，为None。
+    pooler_output: list[torch.Tensor | None] | None = None
+
+    # KV连接器输出。
+    # 包含KV缓存操作信息，用于分布式缓存管理和不同引擎进程间的协调。
+    kv_connector_output: KVConnectorOutput | None = None
+
+    # EC连接器输出。
+    # 包含编码器缓存操作信息，用于分布式环境中的多模态编码器输出管理。
+    ec_connector_output: ECConnectorOutput | None = None
+
+    # req_id -> num_nans_in_logits
+    # 每个请求的logits中NaN值的数量。
+    # 用于检测模型输出中的数值不稳定并触发错误处理。
+    num_nans_in_logits: dict[str, int] | None = None
+
+    # 与CUDA图执行相关的信息
+    # CUDA图执行的统计信息和元数据，用于性能监控。
+    cudagraph_stats: CUDAGraphStat | None = None
+```
+
+**ModelRunnerOutput 在推理生命周期中的作用**：
+
+1. **模型执行结果封装**：GPUModelRunner.execute_model() 执行完成后返回的结果容器
+2. **采样结果传输**：包含每个请求生成的 token ID 和相关的采样信息
+3. **日志概率提供**：为需要 logprobs 的请求提供 token 级别的概率信息
+4. **池化输出支持**：为池化模型提供 embedding 输出
+5. **连接器状态同步**：传递 KV/EC 连接器的状态信息
+
+**与关键组件的交互关系**：
+
+1. **GPUModelRunner**：
+   - 作为执行器的输出结果，由 execute_model() 方法返回
+   - 包含执行过程中生成的 token 和状态信息
+   - 在 sample_tokens() 中处理和丰富输出数据
+
+2. **EngineCore**：
+   - 从 GPUModelRunner 接收 ModelRunnerOutput
+   - 传递给 Scheduler.update_from_output() 进行状态更新
+   - 作为 EngineCoreOutputs 的组成部分传递给 OutputProcessor
+
+3. **Scheduler**：
+   - 通过 update_from_output() 方法处理 ModelRunnerOutput
+   - 根据输出结果更新请求状态和调度信息
+   - 生成 EngineCoreOutput 用于后续处理
+
+4. **OutputProcessor**：
+   - 从 EngineCoreOutput 中提取 ModelRunnerOutput 信息
+   - 使用 sampled_token_ids 和 logprobs 进行解码和响应生成
+   - 处理 pooler_output 用于池化模型的响应
+
+5. **KVConnector/ECConnector**：
+   - 通过 kv_connector_output 和 ec_connector_output 传递连接器状态
+   - 协调分布式缓存的状态管理和同步
+
+**在推理流程中的关键位置**：
+
+```
+GPUModelRunner.execute_model() 
+    ↓
+ModelRunnerOutput ← 生成的 token、logprobs 等
+    ↓
+EngineCore.update_from_output() 
+    ↓
+Scheduler.update_from_output() 
+    ↓
+EngineCoreOutput 构建和传递给 OutputProcessor
+    ↓
+OutputProcessor.process_outputs() 
+    ↓
+最终响应生成
 ```
 
 ### 5.4 Input Batch
